@@ -1,22 +1,24 @@
 import MetaMaskOnboarding from '@metamask/onboarding';
-import { createWeb3Modal, defaultConfig } from '@web3modal/ethers5';
 // eslint-disable-next-line camelcase
 import {
   encrypt,
   recoverPersonalSignature,
-  recoverTypedSignatureLegacy,
   recoverTypedSignature,
-  recoverTypedSignature_v4 as recoverTypedSignatureV4,
-} from 'eth-sig-util';
+} from '@metamask/eth-sig-util';
 import { ethers } from 'ethers';
 import { toChecksumAddress } from 'ethereumjs-util';
-import { getPermissionsDisplayString, stringifiableToHex } from './utils';
+import {
+  handleSdkConnect,
+  handleWalletConnect,
+  walletConnect,
+} from './connections';
 import Constants from './constants.json';
 import {
-  NETWORKS_BY_CHAIN_ID,
   ERC20_SAMPLE_CONTRACTS,
   ERC721_SAMPLE_CONTRACTS,
+  NETWORKS_BY_CHAIN_ID,
 } from './onchain-sample-contracts';
+import { getPermissionsDisplayString, stringifiableToHex } from './utils';
 
 const {
   hstBytecode,
@@ -41,6 +43,16 @@ const currentUrl = new URL(window.location.href);
 const forwarderOrigin =
   currentUrl.hostname === 'localhost' ? 'http://localhost:9010' : undefined;
 const urlSearchParams = new URLSearchParams(window.location.search);
+let deployedContractAddress = urlSearchParams.get('contract');
+if (!ethers.utils.isAddress(deployedContractAddress)) {
+  deployedContractAddress = '';
+}
+
+let tokenDecimals = urlSearchParams.get('decimals');
+if (!tokenDecimals) {
+  tokenDecimals = '18';
+}
+
 const scrollTo = urlSearchParams.get('scrollTo');
 
 /**
@@ -68,7 +80,8 @@ const warningDiv = document.getElementById('warning');
 const onboardButton = document.getElementById('connectButton');
 const getAccountsButton = document.getElementById('getAccounts');
 const getAccountsResult = document.getElementById('getAccountsResult');
-const openConnectModalBtn = document.getElementById('open-connect-modal');
+const walletConnectBtn = document.getElementById('walletConnect');
+const sdkConnectBtn = document.getElementById('sdkConnect');
 
 // Permissions Actions Section
 const requestPermissionsButton = document.getElementById('requestPermissions');
@@ -91,10 +104,6 @@ const sendMultisigButton = document.getElementById('sendMultisigButton');
 const multisigContractStatus = document.getElementById(
   'multisigContractStatus',
 );
-const deployAddressSmartContract = document.getElementById(
-  'smartContractAddress',
-);
-const deployedContractAddress = deployAddressSmartContract.value;
 
 // NFTs Section
 const deployNFTsButton = document.getElementById('deployNFTsButton');
@@ -114,6 +123,7 @@ const revokeButton = document.getElementById('revokeButton');
 const transferTokenInput = document.getElementById('transferTokenInput');
 const transferFromButton = document.getElementById('transferFromButton');
 const nftsStatus = document.getElementById('nftsStatus');
+const erc721TokenAddresses = document.getElementById('erc721TokenAddresses');
 
 // ERC 1155 Section
 
@@ -135,6 +145,7 @@ const revokeERC1155Button = document.getElementById('revokeERC1155Button');
 const watchAssetInput = document.getElementById('watchAssetInput');
 const watchAssetButton = document.getElementById('watchAssetButton');
 const erc1155Status = document.getElementById('erc1155Status');
+const erc1155TokenAddresses = document.getElementById('erc1155TokenAddresses');
 
 // ERC 747 Section
 const eip747ContractAddress = document.getElementById('eip747ContractAddress');
@@ -149,6 +160,9 @@ const toDivSendEth = document.getElementById('toInputSendEth');
 const amountSendEth = document.getElementById('amountInputSendEth');
 const sendButton = document.getElementById('sendButton');
 const sendEIP1559Button = document.getElementById('sendEIP1559Button');
+const sendEIP1559WithoutGasButton = document.getElementById(
+  'sendEIP1559WithoutGasButton',
+);
 
 // Send Tokens Section
 const decimalUnitsInput = document.getElementById('tokenDecimals');
@@ -160,7 +174,7 @@ const transferFromRecipientInput = document.getElementById(
   'transferFromRecipientInput',
 );
 const tokenSymbol = 'TST';
-const tokenAddresses = document.getElementById('tokenAddresses');
+const erc20TokenAddresses = document.getElementById('erc20TokenAddresses');
 const createToken = document.getElementById('createToken');
 const watchAssets = document.getElementById('watchAssets');
 const transferTokens = document.getElementById('transferTokens');
@@ -169,6 +183,7 @@ const approveTokens = document.getElementById('approveTokens');
 const increaseTokenAllowance = document.getElementById(
   'increaseTokenAllowance',
 );
+const messageAddressSign = document.getElementById('messageAddressSign');
 const allowanceOwnerInput = document.getElementById('allowanceOwner');
 const allowanceSpenderInput = document.getElementById('allowanceSpender');
 const allowanceAmountResult = document.getElementById('allowanceAmountResult');
@@ -194,7 +209,6 @@ const ciphertextDisplay = document.getElementById('ciphertextDisplay');
 const cleartextDisplay = document.getElementById('cleartextDisplay');
 
 // Ethereum Signature Section
-const messageAddressSign = document.getElementById('signMessageAddress');
 const ethSign = document.getElementById('ethSign');
 const ethSignResult = document.getElementById('ethSignResult');
 const personalSign = document.getElementById('personalSign');
@@ -267,10 +281,6 @@ const signMalformedResult = document.getElementById('signMalformedResult');
 // Malformed Transactions
 const sendWithInvalidValue = document.getElementById('sendWithInvalidValue');
 const sendWithInvalidTxType = document.getElementById('sendWithInvalidTxType');
-const sendWithOddHexData = document.getElementById('sendWithOddHexData');
-const approveERC20WithOddHexData = document.getElementById(
-  'approveERC20WithOddHexData',
-);
 const sendWithInvalidRecipient = document.getElementById(
   'sendWithInvalidRecipient',
 );
@@ -322,7 +332,40 @@ const maliciousSeaport = document.getElementById('maliciousSeaport');
 const maliciousSetApprovalForAll = document.getElementById(
   'maliciousSetApprovalForAll',
 );
+const maliciousAddress = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
 
+// Deeplinks
+const sendDeeplinkButton = document.getElementById('sendDeeplinkButton');
+const transferTokensDeeplink = document.getElementById(
+  'transferTokensDeeplink',
+);
+const approveTokensDeeplink = document.getElementById('approveTokensDeeplink');
+const maliciousSendEthWithDeeplink = document.getElementById(
+  'maliciousSendEthWithDeeplink',
+);
+const maliciousTransferERC20WithDeeplink = document.getElementById(
+  'maliciousTransferERC20WithDeeplink',
+);
+const maliciousApproveERC20WithDeeplink = document.getElementById(
+  'maliciousApproveERC20WithDeeplink',
+);
+
+// PPOM - Malicious Warning Bypasses
+const maliciousSendWithOddHexData = document.getElementById(
+  'maliciousSendWithOddHexData',
+);
+const maliciousApproveERC20WithOddHexData = document.getElementById(
+  'maliciousApproveERC20WithOddHexData',
+);
+const maliciousSendWithoutHexPrefixValue = document.getElementById(
+  'maliciousSendWithoutHexPrefixValue',
+);
+const maliciousPermitHexPaddedChain = document.getElementById(
+  'maliciousPermitHexPaddedChain',
+);
+const maliciousPermitIntAddress = document.getElementById(
+  'maliciousPermitIntAddress',
+);
 // Buttons that require connecting an account
 const allConnectedButtons = [
   deployButton,
@@ -407,10 +450,15 @@ const allConnectedButtons = [
   maliciousSeaport,
   sendWithInvalidValue,
   sendWithInvalidTxType,
-  sendWithOddHexData,
-  approveERC20WithOddHexData,
   sendWithInvalidRecipient,
   mintSepoliaERC20,
+  maliciousSendEthWithDeeplink,
+  maliciousSendWithOddHexData,
+  maliciousSendWithoutHexPrefixValue,
+  maliciousApproveERC20WithOddHexData,
+  maliciousPermitHexPaddedChain,
+  maliciousPermitIntAddress,
+  maliciousPermitIntAddress,
 ];
 
 // Buttons that are available after initially connecting an account
@@ -455,50 +503,13 @@ const initialConnectedButtons = [
   maliciousSeaport,
   sendWithInvalidValue,
   sendWithInvalidTxType,
-  sendWithOddHexData,
-  approveERC20WithOddHexData,
   sendWithInvalidRecipient,
   mintSepoliaERC20,
-];
-
-// Buttons that are available after connecting via Wallet Connect
-const walletConnectButtons = [
-  sendButton,
-  personalSign,
-  signTypedData,
-  ethSign,
-  personalSign,
-  signTypedData,
-  signTypedDataV3,
-  signTypedDataV4,
-  signTypedDataV4Batch,
-  signTypedDataV4Queue,
-  signPermit,
-  siwe,
-  siweResources,
-  siweBadDomain,
-  siweBadAccount,
-  siweMalformed,
-  signInvalidType,
-  signEmptyDomain,
-  signExtraDataNotTyped,
-  signInvalidPrimaryType,
-  signNoPrimaryTypeDefined,
-  signInvalidVerifyingContractType,
-  eip747WatchButton,
-  maliciousApprovalButton,
-  maliciousSetApprovalForAll,
-  maliciousERC20TransferButton,
-  maliciousRawEthButton,
-  maliciousPermit,
-  maliciousTradeOrder,
-  maliciousSeaport,
-  sendWithInvalidValue,
-  sendWithInvalidTxType,
-  sendWithOddHexData,
-  approveERC20WithOddHexData,
-  sendWithInvalidRecipient,
-  mintSepoliaERC20,
+  maliciousSendWithOddHexData,
+  maliciousSendWithoutHexPrefixValue,
+  maliciousApproveERC20WithOddHexData,
+  maliciousPermitHexPaddedChain,
+  maliciousPermitIntAddress,
 ];
 
 /**
@@ -512,62 +523,34 @@ let scrollToHandled = false;
 
 const isMetaMaskConnected = () => accounts && accounts.length > 0;
 let isWalletConnectConnected = false;
+let isSdkConnected = false;
 
 // TODO: Need to align with @metamask/onboarding
 const isMetaMaskInstalled = () => provider && provider.isMetaMask;
 
-// test id
-const projectId = 'e6360eaee594162688065f1c70c863b7';
-
-const metadata = {
-  name: 'E2e Test Dapp',
-  description: 'This is the E2e Test Dapp',
-  url: 'https://metamask.github.io/test-dapp/',
-  icons: ['https://avatars.mywebsite.com/'],
+walletConnectBtn.onclick = () => {
+  walletConnect.open();
+  walletConnect.subscribeProvider(() => {
+    handleWalletConnect(
+      'wallet-connect',
+      walletConnectBtn,
+      isWalletConnectConnected,
+    );
+  });
 };
 
-const modal = createWeb3Modal({
-  ethersConfig: defaultConfig({ metadata }),
-  projectId,
-});
+sdkConnectBtn.onclick = async () => {
+  await handleSdkConnect('sdk-connect', sdkConnectBtn, isSdkConnected);
+};
 
-async function handleWalletConnectChange({ isConnected }) {
-  if (isConnected) {
-    provider = modal.getWalletProvider().provider;
-    const providerDetail = {
-      info: {
-        uuid: provider.signer.uri,
-        name: 'wallet-connect',
-        icon: './wallet-connect.svg',
-        rdns: 'io.metamask',
-      },
-      provider,
-    };
-    setActiveProviderDetail(providerDetail);
-    handleNewProviderDetail(providerDetail);
-
-    isWalletConnectConnected = true;
-    updateFormElements();
-    try {
-      const newAccounts = await provider.request({
-        method: 'eth_accounts',
-      });
-      handleNewAccounts(newAccounts);
-    } catch (err) {
-      console.error('Error on init when getting accounts', err);
-    }
-  } else {
-    isWalletConnectConnected = false;
-    openConnectModalBtn.innerText = 'Wallet Connect';
-    handleNewAccounts([]);
-    updateFormElements();
-  }
+export function updateWalletConnectState(isConnected) {
+  console.log('21312');
+  isWalletConnectConnected = isConnected;
 }
 
-openConnectModalBtn.onclick = () => {
-  modal.open();
-  modal.subscribeProvider(handleWalletConnectChange);
-};
+export function updateSdkConnectionState(isConnected) {
+  isSdkConnected = isConnected;
+}
 
 const detectEip6963 = () => {
   window.addEventListener('eip6963:announceProvider', (event) => {
@@ -582,22 +565,16 @@ const detectEip6963 = () => {
   window.dispatchEvent(new Event('eip6963:requestProvider'));
 };
 
-const setActiveProviderDetail = async (providerDetail) => {
+export const setActiveProviderDetail = async (providerDetail) => {
   closeProvider();
   provider = providerDetail.provider;
-  initializeProvider();
+  await initializeProvider();
 
   try {
     const newAccounts = await provider.request({
       method: 'eth_accounts',
     });
     handleNewAccounts(newAccounts);
-    console.log('onononoin');
-    provider.on('chainChanged', handleNewChain);
-    provider.on('chainChanged', handleEIP1559Support);
-    provider.on('networkChanged', handleNewNetwork);
-    provider.on('accountsChanged', handleNewAccounts);
-    provider.on('accountsChanged', handleEIP1559Support);
   } catch (err) {
     console.error('Error on init when getting accounts', err);
   }
@@ -611,7 +588,7 @@ const setActiveProviderDetail = async (providerDetail) => {
   updateFormElements();
 };
 
-const setActiveProviderDetailWindowEthereum = () => {
+const setActiveProviderDetailWindowEthereum = async () => {
   const providerDetail = {
     info: {
       uuid: '',
@@ -620,8 +597,7 @@ const setActiveProviderDetailWindowEthereum = () => {
     },
     provider: window.ethereum,
   };
-
-  setActiveProviderDetail(providerDetail);
+  await setActiveProviderDetail(providerDetail);
 };
 
 const existsProviderDetail = (newProviderDetail) => {
@@ -650,13 +626,28 @@ const existsProviderDetail = (newProviderDetail) => {
   return false;
 };
 
-const handleNewProviderDetail = (newProviderDetail) => {
+export const handleNewProviderDetail = (newProviderDetail) => {
   if (existsProviderDetail(newProviderDetail)) {
     return;
   }
-
   providerDetails.push(newProviderDetail);
+  renderProviderDetails();
+};
 
+export const removeProviderDetail = (name) => {
+  const index = providerDetails.findIndex(
+    (providerDetail) => providerDetail.info.name === name,
+  );
+  if (index === -1) {
+    console.log(`ProviderDetail with name ${name} not found`);
+    return;
+  }
+  providerDetails.splice(index, 1);
+  renderProviderDetails();
+  console.log(`ProviderDetail with name ${name} removed successfully`);
+};
+
+const renderProviderDetails = () => {
   providersDiv.innerHTML = '';
   providerDetails.forEach((providerDetail) => {
     const { info, provider: provider_ } = providerDetail;
@@ -689,8 +680,8 @@ const handleNewProviderDetail = (newProviderDetail) => {
   });
 };
 
-const handleNewAccounts = (newAccounts) => {
-  console.log(newAccounts, '12312321');
+export const handleNewAccounts = (newAccounts) => {
+  console.log(newAccounts, 'account');
   accounts = newAccounts;
   updateFormElements();
 
@@ -703,11 +694,13 @@ const handleNewAccounts = (newAccounts) => {
 
 let chainIdInt;
 let networkName;
+let chainIdPadded;
 
 const handleNewChain = (chainId) => {
   chainIdDiv.innerHTML = chainId;
   const networkId = parseInt(networkDiv.innerHTML, 10);
   chainIdInt = parseInt(chainIdDiv.innerHTML, 16) || networkId;
+  chainIdPadded = `0x${chainIdInt.toString(16).padStart(77, '0')}`;
   networkName = NETWORKS_BY_CHAIN_ID[chainIdInt];
 
   if (chainId === '0x1') {
@@ -762,6 +755,8 @@ const handleEIP1559Support = async () => {
   if (supported && Array.isArray(accounts) && accounts.length >= 1) {
     sendEIP1559Button.disabled = false;
     sendEIP1559Button.hidden = false;
+    sendEIP1559WithoutGasButton.disabled = false;
+    sendEIP1559WithoutGasButton.hidden = false;
     sendWithInvalidMaxFeePerGas.disabled = false;
     sendWithInvalidMaxFeePerGas.hidden = false;
     sendEIP1559Batch.disabled = false;
@@ -774,6 +769,8 @@ const handleEIP1559Support = async () => {
   } else {
     sendEIP1559Button.disabled = true;
     sendEIP1559Button.hidden = true;
+    sendEIP1559WithoutGasButton.disabled = true;
+    sendEIP1559WithoutGasButton.hidden = true;
     sendEIP1559Batch.disabled = true;
     sendEIP1559Batch.hidden = true;
     sendEIP1559Queue.disabled = true;
@@ -803,44 +800,47 @@ const closeProvider = () => {
 // Must be called after the active provider changes
 // Initializes active provider and adds any listeners
 const initializeProvider = async () => {
-  await provider.request({
-    method: 'wallet_addEthereumChain',
-    params: [
-      {
-        chainId: ethers.utils.hexValue(1287),
-        chainName: 'Moonbase Alpha',
-        rpcUrls: ['https://moonbase-alpha.drpc.org'],
-        nativeCurrency: {
-          name: 'Dev',
-          symbol: 'DEV',
-          decimals: 18,
-        },
-        blockExplorerUrls: ['https://moonbase.moonscan.io'],
-      },
-    ],
-  });
-  chainIdInt = 1287;
+  // if (!isWalletConnectConnected) {
+  //   await provider.request({
+  //     method: 'wallet_addEthereumChain',
+  //     params: [
+  //       {
+  //         chainId: ethers.utils.hexValue(1287),
+  //         chainName: 'Moonbase Alpha',
+  //         rpcUrls: ['https://moonbase-alpha.drpc.org'],
+  //         nativeCurrency: {
+  //           name: 'Dev',
+  //           symbol: 'DEV',
+  //           decimals: 18,
+  //         },
+  //         blockExplorerUrls: ['https://moonbase.moonscan.io'],
+  //       },
+  //     ],
+  //   });
+  // }
   initializeContracts();
   updateFormElements();
-  console.log('add event listener');
-  // eslint-disable-next-line require-atomic-updates
-  provider.autoRefreshOnNetworkChange = false;
 
-  getNetworkAndChainId();
-  console.log('onononoin');
-  provider.on('chainChanged', handleNewChain);
-  provider.on('chainChanged', handleEIP1559Support);
-  provider.on('networkChanged', handleNewNetwork);
-  provider.on('accountsChanged', handleNewAccounts);
-  provider.on('accountsChanged', handleEIP1559Support);
+  if (isMetaMaskInstalled()) {
+    provider.autoRefreshOnNetworkChange = false;
+    getNetworkAndChainId();
 
-  try {
-    const newAccounts = await provider.request({
-      method: 'eth_accounts',
-    });
-    handleNewAccounts(newAccounts);
-  } catch (err) {
-    console.error('Error on init when getting accounts', err);
+    provider.on('chainChanged', handleNewChain);
+    provider.on('chainChanged', handleEIP1559Support);
+    provider.on('networkChanged', handleNewNetwork);
+    provider.on('accountsChanged', handleNewAccounts);
+    provider.on('accountsChanged', handleEIP1559Support);
+
+    try {
+      const newAccounts = await provider.request({
+        method: 'eth_accounts',
+      });
+      handleNewAccounts(newAccounts);
+    } catch (err) {
+      console.error('Error on init when getting accounts', err);
+    }
+  } else {
+    handleScrollTo();
   }
 };
 
@@ -893,7 +893,7 @@ let erc1155Contract;
 const initializeContracts = () => {
   try {
     // We must specify the network as 'any' for ethers to allow network changes
-    ethersProvider = new ethers.providers.Web3Provider(provider);
+    ethersProvider = new ethers.providers.Web3Provider(provider, 'any');
     if (deployedContractAddress) {
       hstContract = new ethers.Contract(
         deployedContractAddress,
@@ -967,7 +967,7 @@ const initializeContracts = () => {
 
 // Must be called after the provider or connect acccounts change
 // Updates form elements content and disabled status
-const updateFormElements = () => {
+export const updateFormElements = () => {
   const accountButtonsDisabled =
     !isMetaMaskInstalled() || !isMetaMaskConnected();
   if (accountButtonsDisabled) {
@@ -976,14 +976,7 @@ const updateFormElements = () => {
     }
     clearDisplayElements();
   }
-  if (
-    isWalletConnectConnected &&
-    activeProviderNameResult.innerText === 'wallet-connect'
-  ) {
-    for (const button of walletConnectButtons) {
-      button.disabled = false;
-    }
-  } else if (isMetaMaskConnected()) {
+  if (isMetaMaskConnected()) {
     for (const button of initialConnectedButtons) {
       button.disabled = false;
     }
@@ -1040,12 +1033,6 @@ const updateOnboardElements = () => {
           method: 'eth_requestAccounts',
         });
         handleNewAccounts(newAccounts);
-        console.log('onononoin');
-        provider.on('chainChanged', handleNewChain);
-        provider.on('chainChanged', handleEIP1559Support);
-        provider.on('networkChanged', handleNewNetwork);
-        provider.on('accountsChanged', handleNewAccounts);
-        provider.on('accountsChanged', handleEIP1559Support);
       } catch (error) {
         console.error(error);
       }
@@ -1054,14 +1041,12 @@ const updateOnboardElements = () => {
   }
 
   if (isWalletConnectConnected) {
-    openConnectModalBtn.innerText = 'Wallet Connect - Connected';
-
     if (onboarding) {
       onboarding.stopOnboarding();
     }
     provider.autoRefreshOnNetworkChange = false;
     getNetworkAndChainId();
-    console.log('xyz');
+
     provider.on('chainChanged', handleNewChain);
     provider.on('chainChanged', handleEIP1559Support);
     provider.on('chainChanged', handleNewNetwork);
@@ -1083,6 +1068,7 @@ const updateContractElements = () => {
     multisigContractStatus.innerHTML = 'Deployed';
     sendMultisigButton.disabled = false;
     // ERC721 Token - NFTs contract
+    erc721TokenAddresses.innerHTML = nftsContract ? nftsContract.address : '';
     nftsStatus.innerHTML = 'Deployed';
     mintButton.disabled = false;
     mintAmountInput.disabled = false;
@@ -1098,6 +1084,9 @@ const updateContractElements = () => {
     watchNFTButtons.innerHTML = '';
 
     // ERC 1155 Multi Token
+    erc1155TokenAddresses.innerHTML = erc1155Contract
+      ? erc1155Contract.address
+      : '';
     erc1155Status.innerHTML = 'Deployed';
     batchMintButton.disabled = false;
     batchMintTokenIds.disabled = false;
@@ -1110,7 +1099,7 @@ const updateContractElements = () => {
     watchAssetInput.disabled = false;
     watchAssetButton.disabled = false;
     // ERC20 Token - Send Tokens
-    tokenAddresses.innerHTML = hstContract ? hstContract.address : '';
+    erc20TokenAddresses.innerHTML = hstContract ? hstContract.address : '';
     watchAssets.disabled = false;
     transferTokens.disabled = false;
     transferFromTokens.disabled = false;
@@ -1300,6 +1289,13 @@ const initializeFormElements = () => {
     console.log(
       `Contract mined! address: ${nftsContract.address} transactionHash: ${nftsContract.deployTransaction.hash}`,
     );
+
+    erc721TokenAddresses.innerHTML = erc721TokenAddresses.innerHTML
+      .concat(', ', nftsContract.address)
+      .split(', ')
+      .filter(Boolean)
+      .join(', ');
+
     nftsStatus.innerHTML = 'Deployed';
     mintButton.disabled = false;
     mintAmountInput.disabled = false;
@@ -1310,7 +1306,7 @@ const initializeFormElements = () => {
     const nftsContractAddress = nftsContract.address;
     let watchNftsResult;
     try {
-      watchNftsResult = await ethereum.sendAsync(
+      watchNftsResult = await provider.sendAsync(
         Array.from({ length: currentTokenId }, (_, i) => i + 1).map(
           (tokenId) => {
             return {
@@ -1451,6 +1447,12 @@ const initializeFormElements = () => {
       `Contract mined! address: ${erc1155Contract.address} transactionHash: ${erc1155Contract.deployTransaction.hash}`,
     );
 
+    erc1155TokenAddresses.innerHTML = erc1155TokenAddresses.innerHTML
+      .concat(', ', erc1155Contract.address)
+      .split(', ')
+      .filter(Boolean)
+      .join(', ');
+
     erc1155Status.innerHTML = 'Deployed';
     batchTransferTokenIds.disabled = false;
     batchTransferTokenAmounts.disabled = false;
@@ -1538,7 +1540,7 @@ const initializeFormElements = () => {
 
   watchAssetButton.onclick = async () => {
     try {
-      const watchAssetResult = await ethereum.request({
+      const watchAssetResult = await provider.request({
         method: 'wallet_watchAsset',
         params: {
           type: 'ERC1155',
@@ -1657,7 +1659,7 @@ const initializeFormElements = () => {
       params: [
         {
           from: accounts[0],
-          to: '0x5FbDB2315678afecb367f032d93F642f64180aa3',
+          to: `${maliciousAddress}`,
           value: '0x9184e72a000',
         },
       ],
@@ -1683,7 +1685,7 @@ const initializeFormElements = () => {
       method: 'eth_signTypedData_v4',
       params: [
         accounts[0],
-        `{"types":{"ERC721Order":[{"type":"uint8","name":"direction"},{"type":"address","name":"maker"},{"type":"address","name":"taker"},{"type":"uint256","name":"expiry"},{"type":"uint256","name":"nonce"},{"type":"address","name":"erc20Token"},{"type":"uint256","name":"erc20TokenAmount"},{"type":"Fee[]","name":"fees"},{"type":"address","name":"erc721Token"},{"type":"uint256","name":"erc721TokenId"},{"type":"Property[]","name":"erc721TokenProperties"}],"Fee":[{"type":"address","name":"recipient"},{"type":"uint256","name":"amount"},{"type":"bytes","name":"feeData"}],"Property":[{"type":"address","name":"propertyValidator"},{"type":"bytes","name":"propertyData"}],"EIP712Domain":[{"name":"name","type":"string"},{"name":"version","type":"string"},{"name":"chainId","type":"uint256"},{"name":"verifyingContract","type":"address"}]},"domain":{"name":"ZeroEx","version":"1.0.0","chainId":${chainIdInt},"verifyingContract":"0xdef1c0ded9bec7f1a1670819833240f027b25eff"},"primaryType":"ERC721Order","message":{"direction":"0","maker":"${accounts[0]}","taker":"0x5FbDB2315678afecb367f032d93F642f64180aa3","expiry":"2524604400","nonce":"100131415900000000000000000000000000000083840314483690155566137712510085002484","erc20Token":"0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2","erc20TokenAmount":"42000000000000","fees":[],"erc721Token":"0x8a90CAb2b38dba80c64b7734e58Ee1dB38B8992e","erc721TokenId":"2516","erc721TokenProperties":[]}}`,
+        `{"types":{"ERC721Order":[{"type":"uint8","name":"direction"},{"type":"address","name":"maker"},{"type":"address","name":"taker"},{"type":"uint256","name":"expiry"},{"type":"uint256","name":"nonce"},{"type":"address","name":"erc20Token"},{"type":"uint256","name":"erc20TokenAmount"},{"type":"Fee[]","name":"fees"},{"type":"address","name":"erc721Token"},{"type":"uint256","name":"erc721TokenId"},{"type":"Property[]","name":"erc721TokenProperties"}],"Fee":[{"type":"address","name":"recipient"},{"type":"uint256","name":"amount"},{"type":"bytes","name":"feeData"}],"Property":[{"type":"address","name":"propertyValidator"},{"type":"bytes","name":"propertyData"}],"EIP712Domain":[{"name":"name","type":"string"},{"name":"version","type":"string"},{"name":"chainId","type":"uint256"},{"name":"verifyingContract","type":"address"}]},"domain":{"name":"ZeroEx","version":"1.0.0","chainId":${chainIdInt},"verifyingContract":"0xdef1c0ded9bec7f1a1670819833240f027b25eff"},"primaryType":"ERC721Order","message":{"direction":"0","maker":"${accounts[0]}","taker":${maliciousAddress},"expiry":"2524604400","nonce":"100131415900000000000000000000000000000083840314483690155566137712510085002484","erc20Token":"0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2","erc20TokenAmount":"42000000000000","fees":[],"erc721Token":"0x8a90CAb2b38dba80c64b7734e58Ee1dB38B8992e","erc721TokenId":"2516","erc721TokenProperties":[]}}`,
       ],
     });
     console.log(result);
@@ -1762,6 +1764,20 @@ const initializeFormElements = () => {
     console.log(result);
   };
 
+  sendEIP1559WithoutGasButton.onclick = async () => {
+    const result = await provider.request({
+      method: 'eth_sendTransaction',
+      params: [
+        {
+          from: accounts[0],
+          to: '0x0c54FcCd2e384b4BB6f2E405Bf5Cbc15a017AaFb',
+          value: '0x0',
+        },
+      ],
+    });
+    console.log(result);
+  };
+
   /**
    * ERC20 Token
    */
@@ -1779,7 +1795,7 @@ const initializeFormElements = () => {
       );
       await hstContract.deployTransaction.wait();
     } catch (error) {
-      tokenAddresses.innerHTML = 'Creation Failed';
+      erc20TokenAddresses.innerHTML = 'Creation Failed';
       throw error;
     }
 
@@ -1790,7 +1806,7 @@ const initializeFormElements = () => {
     console.log(
       `Contract mined! address: ${hstContract.address} transactionHash: ${hstContract.deployTransaction.hash}`,
     );
-    tokenAddresses.innerHTML = tokenAddresses.innerHTML
+    erc20TokenAddresses.innerHTML = erc20TokenAddresses.innerHTML
       .concat(', ', hstContract.address)
       .split(', ')
       .filter(Boolean)
@@ -1812,7 +1828,7 @@ const initializeFormElements = () => {
   };
 
   watchAssets.onclick = async () => {
-    const contractAddresses = tokenAddresses.innerHTML.split(', ');
+    const contractAddresses = erc20TokenAddresses.innerHTML.split(', ');
 
     const promises = contractAddresses.map((erc20Address) => {
       return provider.request({
@@ -1949,7 +1965,6 @@ const initializeFormElements = () => {
 
   getAccountsButton.onclick = async () => {
     try {
-      console.log('runnnn');
       const _accounts = await provider.request({
         method: 'eth_accounts',
       });
@@ -1966,7 +1981,7 @@ const initializeFormElements = () => {
         method: 'wallet_revokePermissions',
         params: [
           {
-            eth_accounts: '12312312312',
+            eth_accounts: {},
           },
         ],
       });
@@ -2010,11 +2025,11 @@ const initializeFormElements = () => {
   encryptButton.onclick = () => {
     try {
       ciphertextDisplay.innerText = stringifiableToHex(
-        encrypt(
-          encryptionKeyDisplay.innerText,
-          { data: encryptMessageInput.value },
-          'x25519-xsalsa20-poly1305',
-        ),
+        encrypt({
+          publicKey: encryptionKeyDisplay.innerText,
+          data: encryptMessageInput.value,
+          version: 'x25519-xsalsa20-poly1305',
+        }),
       );
       decryptButton.disabled = false;
     } catch (error) {
@@ -2110,13 +2125,14 @@ const initializeFormElements = () => {
    */
   ethSign.onclick = async () => {
     try {
+      console.log('sign');
       // const msg = 'Sample message to hash for signature'
       // const msgHash = keccak256(msg)
       const msg =
         '0x879a053d4800c6354e76c7985a865d2922c82fb5b3f4577b2fe08b998954f2e0';
       const ethResult = await provider.request({
         method: 'eth_sign',
-        params: [messageAddressSign.value, msg],
+        params: [accounts[0], msg],
       });
       ethSignResult.innerHTML = JSON.stringify(ethResult);
     } catch (err) {
@@ -2131,7 +2147,7 @@ const initializeFormElements = () => {
   personalSign.onclick = async () => {
     const exampleMessage = 'Example `personal_sign` message';
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const msg = `0x${Buffer.from(exampleMessage, 'utf8').toString('hex')}`;
       const sign = await provider.request({
         method: 'personal_sign',
@@ -2148,7 +2164,7 @@ const initializeFormElements = () => {
   personalSignCaseString.onclick = async () => {
     const exampleMessage = 'Example `personal_sign` message';
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const msg = 213123;
       const sign = await provider.request({
         method: 'personal_sign',
@@ -2168,7 +2184,7 @@ const initializeFormElements = () => {
 
   const siweSign = async (siweMessage) => {
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const msg = `0x${Buffer.from(siweMessage, 'utf8').toString('hex')}`;
       const sign = await provider.request({
         method: 'personal_sign',
@@ -2186,7 +2202,7 @@ const initializeFormElements = () => {
    */
   siwe.onclick = async () => {
     const domain = window.location.host;
-    const from = messageAddressSign.value;
+    const from = accounts[0];
     const siweMessage = `${domain} wants you to sign in with your Ethereum account:\n${from}\n\nI accept the MetaMask Terms of Service: https://community.metamask.io/tos\n\nURI: https://${domain}\nVersion: 1\nChain ID: 1\nNonce: 32891757\nIssued At: 2021-09-30T16:25:24.000Z`;
     siweSign(siweMessage);
   };
@@ -2196,7 +2212,7 @@ const initializeFormElements = () => {
    */
   siweResources.onclick = async () => {
     const domain = window.location.host;
-    const from = messageAddressSign.value;
+    const from = accounts[0];
     const siweMessageResources = `${domain} wants you to sign in with your Ethereum account:\n${from}\n\nI accept the MetaMask Terms of Service: https://community.metamask.io/tos\n\nURI: https://${domain}\nVersion: 1\nChain ID: 1\nNonce: 32891757\nIssued At: 2021-09-30T16:25:24.000Z\nNot Before: 2022-03-17T12:45:13.610Z\nRequest ID: some_id\nResources:\n- ipfs://Qme7ss3ARVgxv6rXqVPiikMJ8u2NLgmgszg13pYrDKEoiu\n- https://example.com/my-web2-claim.json`;
     siweSign(siweMessageResources);
   };
@@ -2206,7 +2222,7 @@ const initializeFormElements = () => {
    */
   siweBadDomain.onclick = async () => {
     const domain = 'metamask.badactor.io';
-    const from = messageAddressSign.value;
+    const from = accounts[0];
     const siweMessageBadDomain = `${domain} wants you to sign in with your Ethereum account:\n${from}\n\nI accept the MetaMask Terms of Service: https://community.metamask.io/tos\n\nURI: https://${domain}\nVersion: 1\nChain ID: 1\nNonce: 32891757\nIssued At: 2021-09-30T16:25:24.000Z\nResources:\n- ipfs://Qme7ss3ARVgxv6rXqVPiikMJ8u2NLgmgszg13pYrDKEoiu\n- https://example.com/my-web2-claim.json`;
     siweSign(siweMessageBadDomain);
   };
@@ -2226,7 +2242,7 @@ const initializeFormElements = () => {
    */
   siweMalformed.onclick = async () => {
     const domain = window.location.host;
-    const from = messageAddressSign.value;
+    const from = accounts[0];
     const siweMessageMissing = `${domain} wants you to sign in with your Ethereum account:\n${from}\n\nI accept the MetaMask Terms of Service: https://community.metamask.io/tos\n\nVersion: 1\nNonce: 32891757\nIssued At: 2021-09-30T16:25:24Z`;
     siweSign(siweMessageMissing);
   };
@@ -2237,12 +2253,12 @@ const initializeFormElements = () => {
   personalSignVerify.onclick = async () => {
     const exampleMessage = 'Example `personal_sign` message';
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const msg = `0x${Buffer.from(exampleMessage, 'utf8').toString('hex')}`;
       const sign = personalSignResult.innerHTML;
       const recoveredAddr = recoverPersonalSignature({
         data: msg,
-        sig: sign,
+        signature: sign,
       });
       if (recoveredAddr === from) {
         console.log(`SigUtil Successfully verified signer as ${recoveredAddr}`);
@@ -2289,10 +2305,10 @@ const initializeFormElements = () => {
       },
     ];
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const sign = await provider.request({
         method: 'eth_signTypedData',
-        params: [msgParams, from],
+        params: [from],
       });
       signTypedDataResult.innerHTML = sign;
       signTypedDataVerify.disabled = false;
@@ -2316,7 +2332,7 @@ const initializeFormElements = () => {
       },
     ];
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const sign = await provider.request({
         method: 'eth_signTypedData',
         params: [12741924, from],
@@ -2341,7 +2357,7 @@ const initializeFormElements = () => {
       },
     ];
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const sign = await provider.request({
         method: 'eth_signTypedData',
         params: [msgParams, from],
@@ -2371,11 +2387,12 @@ const initializeFormElements = () => {
       },
     ];
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const sign = signTypedDataResult.innerHTML;
-      const recoveredAddr = await recoverTypedSignatureLegacy({
+      const recoveredAddr = await recoverTypedSignature({
         data: msgParams,
-        sig: sign,
+        signature: sign,
+        version: 'V1',
       });
       if (toChecksumAddress(recoveredAddr) === toChecksumAddress(from)) {
         console.log(`Successfully verified signer as ${recoveredAddr}`);
@@ -2397,12 +2414,7 @@ const initializeFormElements = () => {
   signTypedDataV3.onclick = async () => {
     const msgParams = {
       types: {
-        EIP712Domain: [
-          { name: 'name', type: 'string' },
-          { name: 'version', type: 'string' },
-          { name: 'chainId', type: 'uint256' },
-          { name: 'verifyingContract', type: 'address' },
-        ],
+        EIP712Domain,
         Person: [
           { name: 'name', type: 'string' },
           { name: 'wallet', type: 'address' },
@@ -2433,7 +2445,7 @@ const initializeFormElements = () => {
       },
     };
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const sign = await provider.request({
         method: 'eth_signTypedData_v3',
         params: [from, JSON.stringify(msgParams)],
@@ -2485,7 +2497,7 @@ const initializeFormElements = () => {
       },
     };
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const sign = await provider.request({
         method: 'eth_signTypedData_v3',
         params: [from, 123123],
@@ -2537,7 +2549,7 @@ const initializeFormElements = () => {
       },
     };
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const sign = await provider.request({
         method: 'eth_signTypedData_v3',
         params: [from, `{
@@ -2625,7 +2637,7 @@ const initializeFormElements = () => {
       },
     };
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const sign = await provider.request({
         method: 'eth_signTypedData_v3',
         params: [from, JSON.stringify(msgParams)],
@@ -2644,12 +2656,7 @@ const initializeFormElements = () => {
   signTypedDataV3Verify.onclick = async () => {
     const msgParams = {
       types: {
-        EIP712Domain: [
-          { name: 'name', type: 'string' },
-          { name: 'version', type: 'string' },
-          { name: 'chainId', type: 'uint256' },
-          { name: 'verifyingContract', type: 'address' },
-        ],
+        EIP712Domain,
         Person: [
           { name: 'name', type: 'string' },
           { name: 'wallet', type: 'address' },
@@ -2680,11 +2687,12 @@ const initializeFormElements = () => {
       },
     };
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const sign = signTypedDataV3Result.innerHTML;
       const recoveredAddr = await recoverTypedSignature({
         data: msgParams,
-        sig: sign,
+        signature: sign,
+        version: 'V3',
       });
       if (toChecksumAddress(recoveredAddr) === toChecksumAddress(from)) {
         console.log(`Successfully verified signer as ${recoveredAddr}`);
@@ -2704,7 +2712,6 @@ const initializeFormElements = () => {
    * Sign Typed Data V4
    */
   signTypedDataV4.onclick = async () => {
-    console.log(chainIdInt, 'chainId');
     const msgParams = {
       domain: {
         chainId: chainIdInt.toString(),
@@ -2735,12 +2742,7 @@ const initializeFormElements = () => {
       },
       primaryType: 'Mail',
       types: {
-        EIP712Domain: [
-          { name: 'name', type: 'string' },
-          { name: 'version', type: 'string' },
-          { name: 'chainId', type: 'uint256' },
-          { name: 'verifyingContract', type: 'address' },
-        ],
+        EIP712Domain,
         Group: [
           { name: 'name', type: 'string' },
           { name: 'members', type: 'Person[]' },
@@ -2758,7 +2760,7 @@ const initializeFormElements = () => {
       },
     };
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const sign = await provider.request({
         method: 'eth_signTypedData_v4',
         params: [from, JSON.stringify(msgParams)],
@@ -2826,7 +2828,7 @@ const initializeFormElements = () => {
       },
     };
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const sign = await provider.request({
         method: 'eth_signTypedData_v4',
         params: [from, JSON.stringify(msgParams)],
@@ -2894,7 +2896,7 @@ const initializeFormElements = () => {
       },
     };
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const sign = await provider.request({
         method: 'eth_signTypedData_v4',
         params: [from, 123123],
@@ -2962,7 +2964,7 @@ const initializeFormElements = () => {
       },
     };
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const sign = await provider.request({
         method: 'eth_signTypedData_v4',
         params: [from, `{
@@ -3030,7 +3032,6 @@ const initializeFormElements = () => {
    *  Sign Typed Data V4 Verification
    */
   signTypedDataV4Verify.onclick = async () => {
-    console.log(chainIdInt, 'chainId');
     const msgParams = {
       domain: {
         chainId: chainIdInt,
@@ -3061,12 +3062,7 @@ const initializeFormElements = () => {
       },
       primaryType: 'Mail',
       types: {
-        EIP712Domain: [
-          { name: 'name', type: 'string' },
-          { name: 'version', type: 'string' },
-          { name: 'chainId', type: 'uint256' },
-          { name: 'verifyingContract', type: 'address' },
-        ],
+        EIP712Domain,
         Group: [
           { name: 'name', type: 'string' },
           { name: 'members', type: 'Person[]' },
@@ -3084,11 +3080,12 @@ const initializeFormElements = () => {
       },
     };
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const sign = signTypedDataV4Result.innerHTML;
-      const recoveredAddr = recoverTypedSignatureV4({
+      const recoveredAddr = recoverTypedSignature({
         data: msgParams,
-        sig: sign,
+        signature: sign,
+        version: 'V4',
       });
       if (toChecksumAddress(recoveredAddr) === toChecksumAddress(from)) {
         console.log(`Successfully verified signer as ${recoveredAddr}`);
@@ -3107,22 +3104,30 @@ const initializeFormElements = () => {
   /**
    *  Sign Permit
    */
-  signPermit.onclick = async () => {
-    const from = messageAddressSign.value;
+  const EIP712Domain = [
+    { name: 'name', type: 'string' },
+    { name: 'version', type: 'string' },
+    { name: 'chainId', type: 'uint256' },
+    { name: 'verifyingContract', type: 'address' },
+  ];
 
-    const domain = {
-      name: 'MyToken',
-      version: '1',
-      verifyingContract: '0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC',
-      chainId: chainIdInt,
-    };
+  const Permit = [
+    { name: 'owner', type: 'address' },
+    { name: 'spender', type: 'address' },
+    { name: 'value', type: 'uint256' },
+    { name: 'nonce', type: 'uint256' },
+    { name: 'deadline', type: 'uint256' },
+  ];
 
-    const EIP712Domain = [
-      { name: 'name', type: 'string' },
-      { name: 'version', type: 'string' },
-      { name: 'verifyingContract', type: 'address' },
-      { name: 'chainId', type: 'uint256' },
-    ];
+  const permitMsgParamsDomain = {
+    name: 'MyToken',
+    version: '1',
+    verifyingContract: '0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC',
+    chainId: chainIdInt,
+  };
+
+  function getPermitMsgParams() {
+    const from = accounts[0];
 
     const permit = {
       owner: from,
@@ -3132,40 +3137,37 @@ const initializeFormElements = () => {
       deadline: 50000000000,
     };
 
-    const Permit = [
-      { name: 'owner', type: 'address' },
-      { name: 'spender', type: 'address' },
-      { name: 'value', type: 'uint256' },
-      { name: 'nonce', type: 'uint256' },
-      { name: 'deadline', type: 'uint256' },
-    ];
-
-    const splitSig = (sig) => {
-      const pureSig = sig.replace('0x', '');
-
-      const _r = Buffer.from(pureSig.substring(0, 64), 'hex');
-      const _s = Buffer.from(pureSig.substring(64, 128), 'hex');
-      const _v = Buffer.from(
-        parseInt(pureSig.substring(128, 130), 16).toString(),
-      );
-
-      return { _r, _s, _v };
-    };
-
-    let sign;
-    let r;
-    let s;
-    let v;
-
-    const msgParams = {
+    return {
       types: {
         EIP712Domain,
         Permit,
       },
       primaryType: 'Permit',
-      domain,
+      domain: permitMsgParamsDomain,
       message: permit,
     };
+  }
+
+  function splitSig(sig) {
+    const pureSig = sig.replace('0x', '');
+
+    const _r = Buffer.from(pureSig.substring(0, 64), 'hex');
+    const _s = Buffer.from(pureSig.substring(64, 128), 'hex');
+    const _v = Buffer.from(
+      parseInt(pureSig.substring(128, 130), 16).toString(),
+    );
+
+    return { _r, _s, _v };
+  }
+
+  signPermit.onclick = async () => {
+    const from = accounts[0];
+    const msgParams = getPermitMsgParams();
+
+    let sign;
+    let r;
+    let s;
+    let v;
 
     try {
       sign = await provider.request({
@@ -3192,52 +3194,15 @@ const initializeFormElements = () => {
    *  Sign Permit Verification
    */
   signPermitVerify.onclick = async () => {
-    const from = messageAddressSign.value;
+    const from = accounts[0];
+    const msgParams = getPermitMsgParams();
 
-    const domain = {
-      name: 'MyToken',
-      version: '1',
-      verifyingContract: '0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC',
-      chainId: chainIdInt,
-    };
-
-    const EIP712Domain = [
-      { name: 'name', type: 'string' },
-      { name: 'version', type: 'string' },
-      { name: 'verifyingContract', type: 'address' },
-      { name: 'chainId', type: 'uint256' },
-    ];
-
-    const permit = {
-      owner: from,
-      spender: '0x5B38Da6a701c568545dCfcB03FcB875f56beddC4',
-      value: 3000,
-      nonce: 0,
-      deadline: 50000000000,
-    };
-
-    const Permit = [
-      { name: 'owner', type: 'address' },
-      { name: 'spender', type: 'address' },
-      { name: 'value', type: 'uint256' },
-      { name: 'nonce', type: 'uint256' },
-      { name: 'deadline', type: 'uint256' },
-    ];
-
-    const msgParams = {
-      types: {
-        EIP712Domain,
-        Permit,
-      },
-      primaryType: 'Permit',
-      domain,
-      message: permit,
-    };
     try {
       const sign = signPermitResult.innerHTML;
-      const recoveredAddr = recoverTypedSignatureV4({
+      const recoveredAddr = recoverTypedSignature({
         data: msgParams,
-        sig: sign,
+        signature: sign,
+        version: 'V4',
       });
       if (toChecksumAddress(recoveredAddr) === toChecksumAddress(from)) {
         console.log(`Successfully verified signer as ${recoveredAddr}`);
@@ -3266,12 +3231,7 @@ const initializeFormElements = () => {
         verifyingContract: '0x00000000000000ADc04C56Bf30aC9d3c0aAF14dC',
       },
       types: {
-        EIP712Domain: [
-          { name: 'name', type: 'string' },
-          { name: 'version', type: 'string' },
-          { name: 'chainId', type: 'uint256' },
-          { name: 'verifyingContract', type: 'address' },
-        ],
+        EIP712Domain,
         OrderComponents: [
           { name: 'consideration', type: 'ConsiderationItem[+' },
         ],
@@ -3290,7 +3250,7 @@ const initializeFormElements = () => {
       },
     };
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const sign = await provider.request({
         method: 'eth_signTypedData_v4',
         params: [from, JSON.stringify(msgParams)],
@@ -3331,12 +3291,7 @@ const initializeFormElements = () => {
       },
       primaryType: 'Mail',
       types: {
-        EIP712Domain: [
-          { name: 'name', type: 'string' },
-          { name: 'version', type: 'string' },
-          { name: 'chainId', type: 'uint256' },
-          { name: 'verifyingContract', type: 'address' },
-        ],
+        EIP712Domain,
         Group: [
           { name: 'name', type: 'string' },
           { name: 'members', type: 'Person[]' },
@@ -3354,7 +3309,7 @@ const initializeFormElements = () => {
       },
     };
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const sign = await provider.request({
         method: 'eth_signTypedData_v4',
         params: [from, JSON.stringify(msgParams)],
@@ -3383,17 +3338,12 @@ const initializeFormElements = () => {
       },
       primaryType: 'Wallet',
       types: {
-        EIP712Domain: [
-          { name: 'name', type: 'string' },
-          { name: 'version', type: 'string' },
-          { name: 'chainId', type: 'uint256' },
-          { name: 'verifyingContract', type: 'address' },
-        ],
+        EIP712Domain,
         Wallet: [{ name: 'name', type: 'string' }],
       },
     };
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const sign = await provider.request({
         method: 'eth_signTypedData_v4',
         params: [from, JSON.stringify(msgParams)],
@@ -3421,17 +3371,12 @@ const initializeFormElements = () => {
       },
       primaryType: 'Non-Existent',
       types: {
-        EIP712Domain: [
-          { name: 'name', type: 'string' },
-          { name: 'version', type: 'string' },
-          { name: 'chainId', type: 'uint256' },
-          { name: 'verifyingContract', type: 'address' },
-        ],
+        EIP712Domain,
         Wallet: [{ name: 'name', type: 'string' }],
       },
     };
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const sign = await provider.request({
         method: 'eth_signTypedData_v4',
         params: [from, JSON.stringify(msgParams)],
@@ -3475,12 +3420,7 @@ const initializeFormElements = () => {
         ],
       },
       types: {
-        EIP712Domain: [
-          { name: 'name', type: 'string' },
-          { name: 'version', type: 'string' },
-          { name: 'chainId', type: 'uint256' },
-          { name: 'verifyingContract', type: 'address' },
-        ],
+        EIP712Domain,
         Group: [
           { name: 'name', type: 'string' },
           { name: 'members', type: 'Person[]' },
@@ -3497,7 +3437,7 @@ const initializeFormElements = () => {
       },
     };
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const sign = await provider.request({
         method: 'eth_signTypedData_v4',
         params: [from, JSON.stringify(msgParams)],
@@ -3524,17 +3464,12 @@ const initializeFormElements = () => {
       },
       primaryType: 'Wallet',
       types: {
-        EIP712Domain: [
-          { name: 'name', type: 'string' },
-          { name: 'version', type: 'string' },
-          { name: 'chainId', type: 'uint256' },
-          { name: 'verifyingContract', type: 'address' },
-        ],
+        EIP712Domain,
         Wallet: [{ name: 'name', type: 'string' }],
       },
     };
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const sign = await provider.request({
         method: 'eth_signTypedData_v4',
         params: [from, JSON.stringify(msgParams)],
@@ -3552,7 +3487,7 @@ const initializeFormElements = () => {
 
   sendWithInvalidValue.onclick = async () => {
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const send = await provider.request({
         method: 'eth_sendTransaction',
         params: [
@@ -3576,7 +3511,7 @@ const initializeFormElements = () => {
 
   sendWithInvalidTxType.onclick = async () => {
     try {
-      const from = messageAddressSign.value;
+      const from = accounts[0];
       const send = await provider.request({
         method: 'eth_sendTransaction',
         params: [
@@ -3585,65 +3520,6 @@ const initializeFormElements = () => {
             to: '0x0c54FcCd2e384b4BB6f2E405Bf5Cbc15a017AaFb',
             value: '0x0',
             type: '0x5', // invalid tx type - expected 0x1 or 0x2
-          },
-        ],
-      });
-      sendMalformedResult.innerHTML = send;
-    } catch (err) {
-      console.error(err);
-      sendMalformedResult.innerHTML = `Error: ${err.message}`;
-    }
-  };
-
-  /**
-   * Send With Odd Hex Data
-   */
-
-  sendWithOddHexData.onclick = async () => {
-    try {
-      const from = messageAddressSign.value;
-      const send = await provider.request({
-        method: 'eth_sendTransaction',
-        params: [
-          {
-            from,
-            to: '0x5FbDB2315678afecb367f032d93F642f64180aa3',
-            value: '0x9184e72a000',
-            data: '0x1', // odd hex data - expected 0x01
-          },
-        ],
-      });
-      sendMalformedResult.innerHTML = send;
-    } catch (err) {
-      console.error(err);
-      sendMalformedResult.innerHTML = `Error: ${err.message}`;
-    }
-  };
-
-  /**
-   * Approve ERC20 With Odd Hex Data
-   */
-
-  approveERC20WithOddHexData.onclick = async () => {
-    let erc20Contract;
-
-    if (networkName) {
-      erc20Contract = ERC20_SAMPLE_CONTRACTS[networkName];
-    } else {
-      erc20Contract = '0x4fabb145d64652a948d72533023f6e7a623c7c53';
-    }
-
-    try {
-      const from = messageAddressSign.value;
-      const send = await provider.request({
-        method: 'eth_sendTransaction',
-        params: [
-          {
-            from,
-            to: erc20Contract,
-            value: '0x0',
-            // odd approve hex data - expected 0x095ea7b3...
-            data: '0x95ea7b3000000000000000000000000e50a2dbc466d01a34c3e8b7e8e45fce4f7da39e6000000000000000000000000000000000000000000000000ffffffffffffffff',
           },
         ],
       });
@@ -3783,7 +3659,7 @@ const initializeFormElements = () => {
           params: [
             {
               from: accounts[0],
-              to: '0x5FbDB2315678afecb367f032d93F642f64180aa3',
+              to: `${maliciousAddress}`,
               value: '0x0',
               gasLimit: '0x5028',
               maxFeePerGas: '0x2540be400',
@@ -3808,7 +3684,7 @@ const initializeFormElements = () => {
           params: [
             {
               from: accounts[0],
-              to: '0x0c54FcCd2e384b4BB6f2E405Bf5Cbc15a017AaFb',
+              to: '0x5FbDB2315678afecb367f032d93F642f64180aa3',
               value: '0x0',
               gasLimit: '0x5028',
               maxFeePerGas: '0x2540be400',
@@ -3823,10 +3699,115 @@ const initializeFormElements = () => {
   };
 
   /**
+   *  PPOM - Malicious Warning Bypasses
+   */
+  maliciousSendWithOddHexData.onclick = async () => {
+    try {
+      const from = accounts[0];
+      const send = await provider.request({
+        method: 'eth_sendTransaction',
+        params: [
+          {
+            from,
+            to: `${maliciousAddress}`,
+            value: '0x9184e72a000',
+            data: '0x1', // odd hex data - expected 0x01
+          },
+        ],
+      });
+      sendMalformedResult.innerHTML = send;
+    } catch (err) {
+      console.error(err);
+      sendMalformedResult.innerHTML = `Error: ${err.message}`;
+    }
+  };
+
+  maliciousApproveERC20WithOddHexData.onclick = async () => {
+    let erc20Contract;
+
+    if (networkName) {
+      erc20Contract = ERC20_SAMPLE_CONTRACTS[networkName];
+    } else {
+      erc20Contract = '0x4fabb145d64652a948d72533023f6e7a623c7c53';
+    }
+
+    try {
+      const from = accounts[0];
+      const send = await provider.request({
+        method: 'eth_sendTransaction',
+        params: [
+          {
+            from,
+            to: erc20Contract,
+            value: '0x0',
+            // odd approve hex data - expected 0x095ea7b3...
+            data: '0x95ea7b3000000000000000000000000e50a2dbc466d01a34c3e8b7e8e45fce4f7da39e6000000000000000000000000000000000000000000000000ffffffffffffffff',
+          },
+        ],
+      });
+      sendMalformedResult.innerHTML = send;
+    } catch (err) {
+      console.error(err);
+      sendMalformedResult.innerHTML = `Error: ${err.message}`;
+    }
+  };
+
+  maliciousSendWithoutHexPrefixValue.onclick = async () => {
+    try {
+      const from = accounts[0];
+      const send = await provider.request({
+        method: 'eth_sendTransaction',
+        params: [
+          {
+            from,
+            to: `${maliciousAddress}`,
+            value: 'ffffffffffffff', // value without 0x prefix
+          },
+        ],
+      });
+      sendMalformedResult.innerHTML = send;
+    } catch (err) {
+      console.error(err);
+      sendMalformedResult.innerHTML = `Error: ${err.message}`;
+    }
+  };
+  maliciousPermitHexPaddedChain.onclick = async () => {
+    const result = await provider.request({
+      method: 'eth_signTypedData_v4',
+      params: [
+        accounts[0],
+        `{"types":{"EIP712Domain":[{"name":"name","type":"string"},{"name":"version","type":"string"},{"name":"chainId","type":"uint256"},{"name":"verifyingContract","type":"address"}],"Permit":[{"name":"owner","type":"address"},{"name":"spender","type":"address"},{"name":"value","type":"uint256"},{"name":"nonce","type":"uint256"},{"name":"deadline","type":"uint256"}]},"primaryType":"Permit","domain":{"name":"USD Coin","verifyingContract":"0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48","chainId":"${chainIdPadded}","version":"2"},"message":{"owner":"${accounts[0]}","spender":"0x1661F1B207629e4F385DA89cFF535C8E5Eb23Ee3","value":"1033366316628","nonce":1,"deadline":1678709555}}`,
+      ],
+    });
+    console.log(result);
+  };
+
+  maliciousPermitIntAddress.onclick = async () => {
+    const result = await provider.request({
+      method: 'eth_signTypedData_v4',
+      params: [
+        accounts[0],
+        `{"types":{"EIP712Domain":[{"name":"name","type":"string"},{"name":"version","type":"string"},{"name":"chainId","type":"uint256"},{"name":"verifyingContract","type":"address"}],"Permit":[{"name":"owner","type":"address"},{"name":"spender","type":"address"},{"name":"value","type":"uint256"},{"name":"nonce","type":"uint256"},{"name":"deadline","type":"uint256"}]},"primaryType":"Permit","domain":{"name":"USD Coin","verifyingContract":"917551056842671309452305380979543736893630245704","chainId":${chainIdInt},"version":"2"},"message":{"owner":"${accounts[0]}","spender":"0x1661F1B207629e4F385DA89cFF535C8E5Eb23Ee3","value":"1033366316628","nonce":1,"deadline":1678709555}}`,
+      ],
+    });
+    console.log(result);
+  };
+
+  /**
    * Providers
    */
 
   useWindowProviderButton.onclick = setActiveProviderDetailWindowEthereum;
+};
+
+const setDeeplinks = () => {
+  sendDeeplinkButton.href =
+    'https://metamask.app.link/send/0x0c54FcCd2e384b4BB6f2E405Bf5Cbc15a017AaFb?value=0';
+  transferTokensDeeplink.href = `https://metamask.app.link/send/${deployedContractAddress}/transfer?address=0x2f318C334780961FB129D2a6c30D0763d9a5C970&uint256=4e${tokenDecimals}`;
+  approveTokensDeeplink.href = `https://metamask.app.link/approve/${deployedContractAddress}/approve?address=0x178e3e6c9f547A00E33150F7104427ea02cfc747&uint256=3e${tokenDecimals}`;
+  maliciousSendEthWithDeeplink.href = `https://metamask.app.link/send/${maliciousAddress}?value=0`;
+  maliciousTransferERC20WithDeeplink.href = `https://metamask.app.link/send/0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48@1/transfer?address=${maliciousAddress}&uint256=1e6`;
+  maliciousApproveERC20WithDeeplink.href = `https://metamask.app.link/approve/0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48@1/approve?address=${maliciousAddress}&uint256=1e6`;
 };
 
 /**
@@ -3834,9 +3815,11 @@ const initializeFormElements = () => {
  */
 
 const initialize = async () => {
-  setActiveProviderDetailWindowEthereum();
+  await setActiveProviderDetailWindowEthereum();
   detectEip6963();
+  await setActiveProviderDetail(providerDetails[0]);
   initializeFormElements();
+  setDeeplinks();
 };
 
 window.addEventListener('load', initialize);
